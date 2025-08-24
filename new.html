@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Final Voice AI Expense Splitter with Web Speech API</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f0f0f0; padding: 20px; }
+    .container { max-width: 600px; background: white; margin: auto; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+    h1, h2 { color: #333; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+    #mic-button { width: 100%; padding: 15px; font-size: 16px; background: #007AFF; color: white; border: none; cursor: pointer; font-weight: 600; border-radius: 8px; margin-bottom: 15px; }
+    #mic-button:disabled { background: #ccc; }
+    #mic-button.recording { background: #ff4136; }
+    #status { text-align: center; color: #555; height: 20px; font-style: italic; }
+    #result { margin-top: 20px; font-size: 16px; line-height: 1.6; }
+    .details { background: #f9f9f9; border-left: 3px solid #007AFF; padding: 15px; margin-bottom: 15px; border-radius: 4px; }
+    .details p { margin: 5px 0; }
+    #settlements { list-style-type: none; padding-left: 0; }
+    #settlements li { background: #f0f0f0; padding: 10px; border-radius: 6px; margin-bottom: 8px; }
+    .warning { color: #d9534f; font-size: 14px; text-align: center; margin-top: 10px;}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Final Voice AI Splitter</h1>
+    <button id="mic-button">Click to Record Expense</button>
+    <div id="status"></div>
+    <div id="result"></div>
+  </div>
+
+  <script type="module">
+    // --- PASTE YOUR GROQ API KEY HERE ---
+    const groqApiKey = "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"; // Replace with your actual Groq API key
+   
+    const micButton = document.getElementById('mic-button');
+    const statusDiv = document.getElementById('status');
+    const resultDiv = document.getElementById('result');
+    const placeholderKey = "YOUR_GROQ_API_KEY";
+
+    // ✅ FIXED: This check now correctly compares against the full placeholder string.
+    if (groqApiKey === placeholderKey) {
+        statusDiv.innerHTML = `<p class="warning">Please replace the placeholder Groq API key in the script to enable AI processing.</p>`;
+        micButton.disabled = true;
+    }
+
+    // --- Using the Browser's Web Speech API ---
+    window.SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!window.SpeechRecognition) {
+      micButton.disabled = true;
+      statusDiv.innerHTML = `<p class="warning">Web Speech API is not supported by this browser. Please use Chrome or Edge.</p>`;
+    } else {
+      const recognition = new SpeechRecognition();
+      let isRecording = false;
+      let finalTranscript = '';
+
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      micButton.addEventListener('click', () => {
+        if (isRecording) {
+          recognition.stop();
+        } else {
+          resultDiv.innerHTML = '';
+          finalTranscript = '';
+          recognition.start();
+        }
+      });
+
+      recognition.onstart = () => {
+        isRecording = true;
+        micButton.classList.add('recording');
+        micButton.textContent = 'Listening... (Click to Stop)';
+        statusDiv.textContent = 'Speak now...';
+      };
+
+      recognition.onend = () => {
+        isRecording = false;
+        micButton.classList.remove('recording');
+        micButton.textContent = 'Click to Record Expense';
+        statusDiv.textContent = 'Transcription finished. Processing...';
+        
+        if (finalTranscript.trim()) {
+            processWithGroq(finalTranscript.trim());
+        } else {
+            statusDiv.textContent = 'Could not detect speech. Please try again.';
+        }
+      };
+
+      recognition.onresult = (event) => {
+        let interimTranscript = '';
+        finalTranscript = ''; // Reset final transcript on new result event
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscript += event.results[i][0].transcript;
+          } else {
+            interimTranscript += event.results[i][0].transcript;
+          }
+        }
+        statusDiv.textContent = interimTranscript || '...';
+      };
+
+      recognition.onerror = (event) => {
+        statusDiv.innerHTML = `<p class="warning">Error during recognition: ${event.error}</p>`;
+        isRecording = false;
+        micButton.classList.remove('recording');
+        micButton.textContent = 'Click to Record Expense';
+      };
+    }
+
+    // --- The Groq AI and Settlement logic remains unchanged ---
+    async function processWithGroq(transcript) {
+        if (!transcript) { statusDiv.textContent = "Could not understand audio. Please try again."; return; }
+        const systemPrompt = `You are an expert expense parsing assistant. Parse the user's text and return ONLY a valid JSON object with keys: "amount", "payer", "participants", "reason", "group", "date", and "split_details". Default date to today if not mentioned.`;
+        try {
+            const response = await fetch('https://api.groq.com/openai/v1/chat/completions', { method: 'POST', headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'llama3-8b-8192', messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: transcript }], response_format: { type: "json_object" }}) });
+            if (!response.ok) throw new Error(`API Error: ${response.statusText}`);
+            const data = await response.json();
+            const parsedData = JSON.parse(data.choices[0].message.content);
+            displaySettlement(parsedData);
+        } catch(e) { resultDiv.innerHTML = `<p class="warning">Error processing with AI: ${e.message}</p>`; }
+    }
+    function displaySettlement(data) {
+        statusDiv.textContent = "Expense Processed!";
+        const { amount, payer, participants, reason, group, date, split_details } = data;
+        const balances = {};
+        participants.forEach(p => { balances[p] = 0; });
+        balances[payer] += amount;
+        for (const person in split_details.distribution) { if (balances.hasOwnProperty(person)) { balances[person] -= split_details.distribution[person]; } }
+        const debtors = [], creditors = [];
+        for (const person in balances) {
+            if (balances[person] > 0.01) creditors.push({ person, amount: balances[person] });
+            if (balances[person] < -0.01) debtors.push({ person, amount: -balances[person] });
+        }
+        const settlements = [];
+        while (debtors.length > 0 && creditors.length > 0) {
+            const debtor = debtors[0], creditor = creditors[0];
+            const payment = Math.min(debtor.amount, creditor.amount);
+            settlements.push(`${debtor.person} owes ${creditor.person} $${payment.toFixed(2)}`);
+            debtor.amount -= payment; creditor.amount -= payment;
+            if (debtor.amount < 0.01) debtors.shift();
+            if (creditor.amount < 0.01) creditors.shift();
+        }
+        resultDiv.innerHTML = `<div class="details"><p><strong>Reason:</strong> ${reason}</p><p><strong>Total:</strong> $${amount.toFixed(2)} | <strong>Paid by:</strong> ${payer}</p><p><strong>Date:</strong> ${date}</p>${group ? `<p><strong>Group:</strong> ${group}</p>` : ''}<p><strong>Split Type:</strong> ${split_details.type}</p></div><h2>Settlement</h2><ul id="settlements">${settlements.length > 0 ? settlements.map(s => `<li>${s}</li>`).join('') : '<li>All settled up!</li>'}</ul>`;
+    }
+  </script>
+</body>
+</html>
